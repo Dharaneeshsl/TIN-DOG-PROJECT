@@ -15,6 +15,7 @@ const { z } = require('zod');
 const nodemailer = require('nodemailer');
 
 const app = express();
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 const JWT_SECRET = process.env.JWT_SECRET || 'development-only-change-me';
@@ -302,7 +303,13 @@ const upload = multer({
     filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
   }),
   limits: { fileSize: Number(process.env.MAX_UPLOAD_BYTES || 5 * 1024 * 1024) },
-  fileFilter: (_req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype))
+  fileFilter: (_req, file, cb) => {
+    if (['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype)) return cb(null, true);
+    const error = new Error('Only JPEG, PNG, WEBP, and GIF images are supported.');
+    error.status = 400;
+    error.expose = true;
+    return cb(error);
+  }
 });
 
 const allowedOrigins = new Set((process.env.CORS_ORIGINS || APP_URL).split(',').map((item) => item.trim()).filter(Boolean));
@@ -384,7 +391,14 @@ const updateSubscriptionStatus = (providerSubscriptionId, status, currentPeriodE
   db.prepare(`UPDATE subscriptions SET status = ?, current_period_end = COALESCE(?, current_period_end), updated_at = CURRENT_TIMESTAMP WHERE provider_subscription_id = ?`).run(status, currentPeriodEnd, providerSubscriptionId);
 };
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'tin-dog', timestamp: new Date().toISOString() }));
+app.get('/api/health', (_req, res) => {
+  try {
+    db.prepare('SELECT 1').get();
+    res.json({ ok: true, service: 'tin-dog', database: 'ok', timestamp: new Date().toISOString() });
+  } catch (_error) {
+    res.status(503).json({ ok: false, service: 'tin-dog', database: 'unavailable', timestamp: new Date().toISOString() });
+  }
+});
 
 app.post('/api/auth/register', authLimiter, async (req, res, next) => {
   try {
@@ -757,7 +771,17 @@ app.use((err, _req, res, _next) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`TIN-DOG running at ${APP_URL}`));
+  const server = app.listen(PORT, '0.0.0.0', () => console.log(`TIN-DOG running at ${APP_URL}`));
+  const shutdown = (signal) => {
+    console.log(`${signal} received; shutting down gracefully`);
+    server.close(() => {
+      db.close();
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
 module.exports = { app, db };
