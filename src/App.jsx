@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-const API = '/api';
+const API = import.meta.env.VITE_API_BASE_URL || '/api';
 const labels = {
   discover: ['Your discovery queue', 'Find your dog’s people'],
   matches: ['Mutual interest', 'Your matches'],
